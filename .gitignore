@@ -1,0 +1,54 @@
+# =============================================================================
+# WaldosLair — .gitignore
+# =============================================================================
+
+# KRITIČNO: Nikad ne commitas ove datoteke!
+.env
+*.env
+.env.local
+.env.production
+
+# Baza podataka — sadrži osobne financijske podatke!
+finance.db
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environment
+venv/
+.venv/
+env/
+.env_dir/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Logs
+*.log
+logs/
+
+# Backup datoteke
+*.bak
+*.backup
+*~
+
+# OS
+Thumbs.db

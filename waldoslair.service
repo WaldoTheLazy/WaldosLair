@@ -1,0 +1,64 @@
+# =============================================================================
+# WaldosLair — systemd Service File
+# =============================================================================
+#
+# INSTALACIJA NA THINKCENTRE SERVERU:
+#
+#   sudo cp waldoslair.service /etc/systemd/system/
+#   sudo systemctl edit waldoslair.service
+#   # Dodaj u [Service] override (NE u ovu datoteku!):
+#   # [Service]
+#   # Environment="ACCESS_CODE=tvoja_jaka_lozinka"
+#   # Environment="DB_PASS=lozinka_baze"
+#   # Environment="SMTP_PASS=app_password"  (opcionalno)
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable waldoslair
+#   sudo systemctl start waldoslair
+#   sudo systemctl status waldoslair
+#   sudo journalctl -u waldoslair -f
+#
+# =============================================================================
+
+[Unit]
+Description=WaldosLair — Personal HUB Application
+After=network.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=waldothelazy
+Group=waldothelazy
+WorkingDirectory=/home/waldothelazy/waldoslair_app
+
+ExecStart=/home/waldothelazy/waldoslair_app/venv/bin/streamlit run main.py \
+    --server.port=8080 \
+    --server.address=127.0.0.1 \
+    --server.headless=true \
+    --browser.gatherUsageStats=false \
+    --server.enableCORS=false \
+    --server.enableXsrfProtection=true \
+    --server.maxUploadSize=10
+
+# OSJETLJIVI PODACI — postavljaju se s: sudo systemctl edit waldoslair.service
+# NE stavljaj lozinke direktno ovdje!
+
+Restart=on-failure
+RestartSec=10
+StartLimitInterval=60
+StartLimitBurst=3
+
+# Sigurnosna ograničenja procesa
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/waldothelazy/waldoslair_app
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=waldoslair
+
+[Install]
+WantedBy=multi-user.target
