@@ -18,7 +18,17 @@ import hashlib
 import hmac
 import logging
 import os
+import sys
 from datetime import datetime
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Osiguraj da Python uvijek pronađe module u direktoriju aplikacije,
+# bez obzira odakle Streamlit pokreće skriptu.
+# ---------------------------------------------------------------------------
+_APP_DIR = Path(__file__).parent.resolve()
+if str(_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(_APP_DIR))
 
 import streamlit as st
 
