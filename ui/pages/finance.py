@@ -1,8 +1,8 @@
 """
 WaldosLair — Finance modul UI (Wayne Enterprises / DC Batman tema).
 
-Streamlit UI komponente za Finance modul.
-Sav pristup bazi ide isključivo kroz core/db.py.
+FIX 2: Uklonjen expander s početnim stanjem iz tab_checking
+FIX 4: @st.dialog zamijenjen session_state modal patternom (Python 3.12+ fix)
 """
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ from core.db import (
     get_setting,
     init_db,
     insert_transaction,
+    set_setting,
     update_transaction,
 )
 from core.utils import format_eur, parse_eur, safe_int, sanitize_text
@@ -73,9 +74,7 @@ def _editor_column_config(account_locked: str | None = None) -> dict:
     }
 
 
-def _apply_editor_changes(
-    editor_key: str, original_df: pd.DataFrame, account_locked: str | None
-) -> bool:
+def _apply_editor_changes(editor_key: str, original_df: pd.DataFrame, account_locked: str | None) -> bool:
     state = st.session_state.get(editor_key)
     if not state:
         return False
@@ -114,7 +113,7 @@ def _apply_editor_changes(
             changed = True
         except Exception as e:
             logger.error("Greška pri unosu: %s", e)
-            st.error("Greška pri spremanju transakcije. Pokušaj ponovo.")
+            st.error("Došlo je do greške pri komunikaciji s bazom.")
 
     state["deleted_rows"] = []
     state["edited_rows"] = {}
@@ -122,39 +121,34 @@ def _apply_editor_changes(
     return changed
 
 
-def render_editor(
-    df: pd.DataFrame,
-    editor_key: str,
-    account_locked: str | None = None,
-    hide_account: bool = False,
-) -> None:
+def render_editor(df: pd.DataFrame, editor_key: str,
+                  account_locked: str | None = None, hide_account: bool = False) -> None:
     show_df = df.copy()
     if hide_account and "account" in show_df.columns:
         show_df = show_df.drop(columns=["account"])
 
-    column_order = [
-        c for c in ["id", "date", "type", "category", "account", "amount", "description"]
-        if c in show_df.columns
-    ]
+    column_order = [c for c in ["id", "date", "type", "category", "account", "amount", "description"]
+                    if c in show_df.columns]
     cfg = _editor_column_config(account_locked=account_locked)
     cfg = {k: v for k, v in cfg.items() if k in show_df.columns}
 
-    st.data_editor(
-        show_df, key=editor_key, num_rows="dynamic",
-        use_container_width=True, hide_index=True,
-        column_order=column_order, column_config=cfg,
-    )
+    st.data_editor(show_df, key=editor_key, num_rows="dynamic",
+                   use_container_width=True, hide_index=True,
+                   column_order=column_order, column_config=cfg)
 
     if _apply_editor_changes(editor_key, df, account_locked):
         st.rerun()
 
 
 # ---------------------------------------------------------------------------
-# Modal za unos nove transakcije
+# FIX 4: Nova transakcija — inline forma umjesto @st.dialog
+# @st.dialog ima bug s Python 3.12+ (TypedDict.__new__ error)
 # ---------------------------------------------------------------------------
 
-@st.dialog("➕ Nova Transakcija", width="large")
-def new_transaction_dialog() -> None:
+def _render_new_transaction_form() -> None:
+    st.markdown("### ➕ Nova Transakcija")
+    st.markdown("<div class='wayne-divider'></div>", unsafe_allow_html=True)
+
     tx_type = st.segmented_control("Tip", TRANSACTION_TYPES, default="Trošak", key="dlg_type")
     if not tx_type:
         tx_type = "Trošak"
@@ -170,10 +164,8 @@ def new_transaction_dialog() -> None:
     with c3:
         tx_date = st.date_input("Datum", value=date.today(), key="dlg_date", format="DD.MM.YYYY")
     with c4:
-        amount_text = st.text_input(
-            "Iznos (€)", value="0,00", placeholder="npr. 1.234,56",
-            help="Format: 1.234,56", key="dlg_amount",
-        )
+        amount_text = st.text_input("Iznos (€)", value="0,00", placeholder="npr. 1.234,56",
+                                    help="Format: 1.234,56 ili 100", key="dlg_amount")
 
     description = st.text_input("Opis (opcionalno)", key="dlg_desc", max_chars=500)
     parsed = parse_eur(amount_text)
@@ -187,18 +179,21 @@ def new_transaction_dialog() -> None:
             else:
                 try:
                     insert_transaction({
-                        "date": tx_date, "type": tx_type,
-                        "category": category, "account": account,
-                        "amount": parsed, "description": description,
+                        "date": tx_date, "type": tx_type, "category": category,
+                        "account": account, "amount": parsed, "description": description,
                     })
+                    st.session_state["show_new_tx_form"] = False
                     st.success("✅ Transakcija uspješno spremljena.")
                     st.rerun()
                 except Exception as e:
-                    logger.error("Greška pri spremanju transakcije: %s", e)
+                    logger.error("Greška: %s", e)
                     st.error("Došlo je do greške pri komunikaciji s bazom.")
     with b2:
         if st.button("✖ Odustani", use_container_width=True, key="dlg_cancel"):
+            st.session_state["show_new_tx_form"] = False
             st.rerun()
+
+    st.markdown("<div class='wayne-divider'></div>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -208,9 +203,8 @@ def new_transaction_dialog() -> None:
 def _account_balance(df: pd.DataFrame) -> float:
     if df.empty:
         return 0.0
-    income = df.loc[df["type"] == "Prihod", "amount"].sum()
-    expense = df.loc[df["type"] == "Trošak", "amount"].sum()
-    return float(income - expense)
+    return float(df.loc[df["type"] == "Prihod", "amount"].sum()
+                 - df.loc[df["type"] == "Trošak", "amount"].sum())
 
 
 # ---------------------------------------------------------------------------
@@ -218,22 +212,8 @@ def _account_balance(df: pd.DataFrame) -> float:
 # ---------------------------------------------------------------------------
 
 def tab_checking() -> None:
+    """FIX 2: Uklonjen expander s početnim stanjem — postavke su u tabu ⚙️ Postavke."""
     starting = parse_eur(get_setting("starting_balance_tekuci", "0"))
-
-    with st.expander("⚙️ Početno stanje računa", expanded=False):
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            sb_text = st.text_input(
-                "Početno stanje (€)", value=format_eur(starting).replace(" €", ""),
-                placeholder="npr. 1.234,56", key="sb_tekuci_input",
-            )
-        with c2:
-            st.markdown("<div style='height:1.85rem;'></div>", unsafe_allow_html=True)
-            if st.button("💾 Spremi", key="sb_tekuci_save", use_container_width=True):
-                from core.db import set_setting
-                set_setting("starting_balance_tekuci", str(parse_eur(sb_text)))
-                st.rerun()
-
     df = fetch_by_account("Tekući račun")
     balance = starting + _account_balance(df)
     tone = "pos" if balance >= 0 else "neg"
@@ -253,23 +233,19 @@ def tab_mastercard() -> None:
 
     df = fetch_by_account("MasterCard Kreditni")
     if not df.empty:
-        mask = (
-            (pd.to_datetime(df["date"]) >= pd.to_datetime(start))
-            & (pd.to_datetime(df["date"]) <= pd.to_datetime(end))
-        )
+        mask = ((pd.to_datetime(df["date"]) >= pd.to_datetime(start))
+                & (pd.to_datetime(df["date"]) <= pd.to_datetime(end)))
         filtered = df[mask].reset_index(drop=True)
     else:
         filtered = df
 
     expenses = float(filtered.loc[filtered["type"] == "Trošak", "amount"].sum()) if not filtered.empty else 0.0
     balance = _account_balance(filtered)
-
     k1, k2 = st.columns(2)
     with k1:
         st.markdown(kpi("Troškovi u rasponu", format_eur(expenses), "neg"), unsafe_allow_html=True)
     with k2:
         st.markdown(kpi("Neto u rasponu", format_eur(balance), "pos" if balance >= 0 else "neg"), unsafe_allow_html=True)
-
     st.markdown("<div class='wayne-divider'></div>", unsafe_allow_html=True)
     render_editor(filtered, editor_key="ed_mastercard", account_locked="MasterCard Kreditni", hide_account=True)
 
@@ -299,13 +275,11 @@ def tab_njivice() -> None:
     df = fetch_by_account("Njivice")
     total = float(df["amount"].sum()) if not df.empty else 0.0
     per_owner = total / 3.0
-
     k1, k2 = st.columns(2)
     with k1:
         st.markdown(kpi("Ukupni godišnji trošak", format_eur(total), "neg"), unsafe_allow_html=True)
     with k2:
         st.markdown(kpi("Tvoj udio (÷ 3)", format_eur(per_owner), "neg"), unsafe_allow_html=True)
-
     st.markdown("<div class='wayne-divider'></div>", unsafe_allow_html=True)
     if not df.empty:
         chart_df = df.copy()
@@ -314,8 +288,7 @@ def tab_njivice() -> None:
         st.markdown("**Mjesečni troškovi**")
         st.bar_chart(monthly, x="month", y="amount", color="#4a90d9", height=260)
     else:
-        st.info("Još nema podataka za prikaz grafova.")
-
+        st.info("Još nema podataka.")
     st.markdown("<div class='wayne-divider'></div>", unsafe_allow_html=True)
     render_editor(df, editor_key="ed_njivice", account_locked="Njivice", hide_account=True)
 
@@ -323,20 +296,17 @@ def tab_njivice() -> None:
 def tab_loan() -> None:
     monthly = parse_eur(get_setting("loan_monthly", str(LOAN_MONTHLY_DEFAULT))) or LOAN_MONTHLY_DEFAULT
     total = safe_int(get_setting("loan_total", str(LOAN_TOTAL_DEFAULT)), LOAN_TOTAL_DEFAULT, min_value=1)
-    paid = max(0, min(total, safe_int(get_setting("loan_paid", str(LOAN_PAID_DEFAULT)), LOAN_PAID_DEFAULT, min_value=0)))
-
-    remaining_installments = max(0, total - paid)
-    remaining_amount = remaining_installments * monthly
+    paid = max(0, min(total, safe_int(get_setting("loan_paid", str(LOAN_PAID_DEFAULT)), LOAN_PAID_DEFAULT)))
+    remaining = max(0, total - paid)
     pct = (paid / total) if total > 0 else 0.0
 
     k1, k2, k3 = st.columns(3)
     with k1:
         st.markdown(kpi("Mjesečni anuitet", format_eur(monthly)), unsafe_allow_html=True)
     with k2:
-        st.markdown(kpi("Preostali iznos", format_eur(remaining_amount), "neg"), unsafe_allow_html=True)
+        st.markdown(kpi("Preostali iznos", format_eur(remaining * monthly), "neg"), unsafe_allow_html=True)
     with k3:
-        st.markdown(kpi("Preostalih rata", str(remaining_installments)), unsafe_allow_html=True)
-
+        st.markdown(kpi("Preostalih rata", str(remaining)), unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(
         f"<div style='font-family:Rajdhani,sans-serif;color:#8aabcc;letter-spacing:0.1em;"
@@ -348,32 +318,24 @@ def tab_loan() -> None:
 
 
 def tab_settings() -> None:
-    """Postavke Finance modula — početno stanje računa i podaci o kreditu."""
     st.markdown("### ⚙️ Postavke Financijskog Modula")
     st.markdown("<div class='wayne-divider'></div>", unsafe_allow_html=True)
 
-    from core.db import set_setting
-
-    # --- Početno stanje ---
     st.markdown("**Tekući račun — Početno stanje**")
+    st.caption("Stanje računa prije bilo kakvih transakcija u sustavu.")
     starting = parse_eur(get_setting("starting_balance_tekuci", "0"))
     c1, c2 = st.columns([3, 1])
     with c1:
-        sb_text = st.text_input(
-            "Početno stanje (€)", value=format_eur(starting).replace(" €", ""),
-            key="settings_sb_tekuci", placeholder="npr. 1.234,56",
-            help="Stanje računa prije bilo kakvih transakcija u sustavu.",
-        )
+        sb_text = st.text_input("Početno stanje (€)", value=format_eur(starting).replace(" €", ""),
+                                placeholder="npr. 1.234,56", key="settings_sb_tekuci")
     with c2:
         st.markdown("<div style='height:1.85rem;'></div>", unsafe_allow_html=True)
-        if st.button("💾 Spremi stanje", key="settings_sb_save", use_container_width=True):
+        if st.button("💾 Spremi", key="settings_sb_save", use_container_width=True):
             set_setting("starting_balance_tekuci", str(parse_eur(sb_text)))
             st.success("✅ Početno stanje spremljeno.")
             st.rerun()
 
     st.markdown("<div class='wayne-divider'></div>", unsafe_allow_html=True)
-
-    # --- Kredit postavke ---
     st.markdown("**Postavke kredita**")
     monthly = parse_eur(get_setting("loan_monthly", str(LOAN_MONTHLY_DEFAULT))) or LOAN_MONTHLY_DEFAULT
     total = safe_int(get_setting("loan_total", str(LOAN_TOTAL_DEFAULT)), LOAN_TOTAL_DEFAULT, min_value=1)
@@ -401,17 +363,15 @@ def tab_reports() -> None:
 
     with sub_tabs[0]:
         if df.empty:
-            st.info("Nema podataka za tjedni pregled.")
+            st.info("Nema podataka.")
         else:
             wdf = df.copy()
             wdf["date"] = pd.to_datetime(wdf["date"])
             wdf["week"] = wdf["date"].dt.to_period("W-SUN").apply(lambda p: p.start_time.date()).astype(str)
-            grouped = wdf.groupby("week").apply(
-                lambda g: pd.Series({
-                    "Prihodi": g.loc[g["type"] == "Prihod", "amount"].sum(),
-                    "Troškovi": g.loc[g["type"] == "Trošak", "amount"].sum(),
-                })
-            ).reset_index()
+            grouped = wdf.groupby("week").apply(lambda g: pd.Series({
+                "Prihodi": g.loc[g["type"] == "Prihod", "amount"].sum(),
+                "Troškovi": g.loc[g["type"] == "Trošak", "amount"].sum(),
+            })).reset_index()
             grouped["Neto"] = grouped["Prihodi"] - grouped["Troškovi"]
             display = grouped.copy()
             for col in ["Prihodi", "Troškovi", "Neto"]:
@@ -421,7 +381,7 @@ def tab_reports() -> None:
 
     with sub_tabs[1]:
         if df.empty:
-            st.info("Nema podataka za mjesečni sažetak.")
+            st.info("Nema podataka.")
         else:
             mdf = df.copy()
             mdf["month"] = pd.to_datetime(mdf["date"]).dt.to_period("M").astype(str)
@@ -448,7 +408,7 @@ def tab_reports() -> None:
 
     with sub_tabs[2]:
         st.markdown("**Kompletan povijesni zapis (editable)**")
-        render_editor(df, editor_key="ed_master", account_locked=None, hide_account=False)
+        render_editor(df, editor_key="ed_master", hide_account=False)
 
     with sub_tabs[3]:
         if df.empty:
@@ -456,19 +416,16 @@ def tab_reports() -> None:
         else:
             buf = io.StringIO()
             df.to_csv(buf, index=False)
-            st.download_button(
-                "⬇️ Preuzmi CSV", data=buf.getvalue(),
-                file_name=f"waldo_finance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv", type="primary",
-            )
+            st.download_button("⬇️ Preuzmi CSV", data=buf.getvalue(),
+                               file_name=f"waldo_finance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                               mime="text/csv", type="primary")
 
 
 # ---------------------------------------------------------------------------
-# Javna metrika za Dashboard karticu
+# Dashboard metrika
 # ---------------------------------------------------------------------------
 
 def get_finance_dashboard_metrics() -> dict:
-    """Vrati financijske KPI-je za Dashboard karticu."""
     init_db()
     starting = parse_eur(get_setting("starting_balance_tekuci", "0"))
     df = fetch_all()
@@ -479,17 +436,10 @@ def get_finance_dashboard_metrics() -> dict:
 
     dates = pd.to_datetime(df["date"])
     month_mask = (dates.dt.year == today.year) & (dates.dt.month == today.month)
-
     tek = df[df["account"] == "Tekući račun"]
-    tek_income = float(tek.loc[tek["type"] == "Prihod", "amount"].sum())
-    tek_expense = float(tek.loc[tek["type"] == "Trošak", "amount"].sum())
-    trenutno = float(starting) + tek_income - tek_expense
-
+    trenutno = float(starting) + float(tek.loc[tek["type"] == "Prihod", "amount"].sum()) - float(tek.loc[tek["type"] == "Trošak", "amount"].sum())
     troskovi = float(df.loc[month_mask & (df["type"] == "Trošak"), "amount"].sum())
-    mc_pending = float(df.loc[
-        month_mask & (df["account"] == "MasterCard Kreditni") & (df["type"] == "Trošak"),
-        "amount"
-    ].sum())
+    mc_pending = float(df.loc[month_mask & (df["account"] == "MasterCard Kreditni") & (df["type"] == "Trošak"), "amount"].sum())
 
     return {"trenutno_stanje": trenutno, "troskovi_mjesec": troskovi, "predvideno_stanje": trenutno - mc_pending}
 
@@ -507,18 +457,20 @@ def render() -> None:
         unsafe_allow_html=True,
     )
 
+    if "show_new_tx_form" not in st.session_state:
+        st.session_state["show_new_tx_form"] = False
+
     if st.button("➕ Nova Transakcija", type="primary"):
-        new_transaction_dialog()
+        st.session_state["show_new_tx_form"] = True
+        st.rerun()
+
+    if st.session_state.get("show_new_tx_form"):
+        with st.container(border=True):
+            _render_new_transaction_form()
 
     tabs = st.tabs([
-        "🦇 Tekući Račun",
-        "💳 MasterCard Kreditni",
-        "🍪 Keks",
-        "🌍 Revolut",
-        "🏖️ Troškovi Njivice",
-        "🏦 Kredit",
-        "📊 Reporti",
-        "⚙️ Postavke",
+        "🦇 Tekući Račun", "💳 MasterCard Kreditni", "🍪 Keks",
+        "🌍 Revolut", "🏖️ Troškovi Njivice", "🏦 Kredit", "📊 Reporti", "⚙️ Postavke",
     ])
     with tabs[0]: tab_checking()
     with tabs[1]: tab_mastercard()

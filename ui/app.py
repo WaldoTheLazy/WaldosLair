@@ -1,13 +1,14 @@
 """
-WaldosLair — Glavna navigacijska stranica (UI layer).
+WaldosLair — Routing, auth i navigacija.
 
-Pokretanje:
-    streamlit run main.py
+FIX 1: Login preživljava F5 refresh (query_params token)
+FIX 3: Novi citat na svaki refresh
 """
 from __future__ import annotations
 
 import hmac
 import logging
+import secrets
 from datetime import datetime
 
 import streamlit as st
@@ -25,30 +26,43 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _check_access_code(submitted: str) -> bool:
-    """Timing-safe provjera lozinke — sprječava timing napade."""
     if not submitted or not ACCESS_CODE:
         return False
     return hmac.compare_digest(submitted.encode("utf-8"), ACCESS_CODE.encode("utf-8"))
 
 
+def _make_session_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def _is_token_valid(token: str) -> bool:
+    return (
+        bool(token)
+        and "auth_token" in st.session_state
+        and hmac.compare_digest(token, st.session_state.get("auth_token", ""))
+    )
+
+
 def _init_session_state() -> None:
-    defaults = {
-        "logged_in": False,
-        "current_page": NAV_PAGES[0][0],
-        "login_attempts": 0,
-        "daily_quote": None,
-    }
-    for key, val in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = val
+    if "logged_in" not in st.session_state:
+        st.session_state["logged_in"] = False
+    if "current_page" not in st.session_state:
+        st.session_state["current_page"] = NAV_PAGES[0][0]
+    if "login_attempts" not in st.session_state:
+        st.session_state["login_attempts"] = 0
+
+    # FIX 1: Obnovi login iz URL tokena — preživljava F5 refresh
+    if not st.session_state["logged_in"]:
+        token_from_url = st.query_params.get("t", "")
+        if token_from_url and _is_token_valid(token_from_url):
+            st.session_state["logged_in"] = True
 
 
 # ---------------------------------------------------------------------------
-# Landing / Login stranica
+# Landing / Login
 # ---------------------------------------------------------------------------
 
 def show_landing() -> None:
-    """Star Wars themed login ekran."""
     st.markdown(DARK_STAR_CSS, unsafe_allow_html=True)
     st.markdown("""
     <div class="hero-container" style="min-height:60vh;padding-bottom:1rem;">
@@ -63,55 +77,45 @@ def show_landing() -> None:
 
     MAX_ATTEMPTS = 10
     if st.session_state.login_attempts >= MAX_ATTEMPTS:
-        st.error("⛔ Previše neuspješnih pokušaja. Osvježi stranicu da pokušaš ponovo.")
-        logger.warning("Dostignut maksimalni broj pokušaja prijave.")
+        st.error("⛔ Previše neuspješnih pokušaja. Osvježi stranicu.")
         return
 
     _, mid, _ = st.columns([1, 2, 1])
     with mid:
         with st.form("login_form", clear_on_submit=False):
-            code = st.text_input(
-                "Enter Access Code", type="password",
-                placeholder="••••••••", label_visibility="visible",
-            )
+            code = st.text_input("Enter Access Code", type="password", placeholder="••••••••")
             submitted = st.form_submit_button("⚔  Enter Lair", use_container_width=True)
 
         if submitted:
             if _check_access_code(code):
+                token = _make_session_token()
                 st.session_state.logged_in = True
+                st.session_state.auth_token = token
                 st.session_state.login_attempts = 0
-                logger.info("Uspješna prijava u WaldosLair.")
-                # Pošalji email notifikaciju (ne blokira login)
+                st.query_params["t"] = token
+                logger.info("Uspješna prijava.")
                 send_login_notification()
                 st.rerun()
             else:
                 st.session_state.login_attempts += 1
                 remaining = MAX_ATTEMPTS - st.session_state.login_attempts
-                st.error(
-                    f"⛔ I find your lack of username and password disturbing. "
-                    f"({remaining} pokušaja ostalo)"
-                )
-                logger.warning("Neuspješan pokušaj prijave #%d", st.session_state.login_attempts)
+                st.error(f"⛔ I find your lack of username and password disturbing. ({remaining} pokušaja ostalo)")
+                logger.warning("Neuspješan pokušaj #%d", st.session_state.login_attempts)
 
 
 # ---------------------------------------------------------------------------
-# Persistentni header
+# Persistentni header — FIX 3: novi citat na svaki refresh
 # ---------------------------------------------------------------------------
 
 def render_persistent_header() -> None:
-    """Welcome header s datumom i quote of the day (svaki refresh = novi quote)."""
     today = datetime.now().strftime("%A, %B %d %Y")
     st.markdown(
         f'<div class="welcome-header">Welcome back, Waldo.</div>'
         f'<div class="welcome-sub">{today}</div>',
         unsafe_allow_html=True,
     )
-
-    # Per specifikacija: svaki refresh stranice = novi quote, ne cachira se
-    if st.session_state.daily_quote is None:
-        st.session_state.daily_quote = get_quote()
-
-    q = st.session_state.daily_quote
+    # Novi citat na svakom renderu — ne cachira se u session_state
+    q = get_quote()
     col_q, col_btn = st.columns([6, 1])
     with col_q:
         st.markdown(
@@ -122,7 +126,6 @@ def render_persistent_header() -> None:
     with col_btn:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("↻ New", help="Novi citat", key="header_new_quote"):
-            st.session_state.daily_quote = get_quote()
             st.rerun()
 
 
@@ -135,11 +138,9 @@ def render_top_nav() -> None:
     for col, (label, _) in zip(cols, NAV_PAGES):
         with col:
             is_active = st.session_state.current_page == label
-            if st.button(
-                label, key=f"nav_{label}",
-                type="primary" if is_active else "secondary",
-                use_container_width=True,
-            ):
+            if st.button(label, key=f"nav_{label}",
+                         type="primary" if is_active else "secondary",
+                         use_container_width=True):
                 st.session_state.current_page = label
                 st.rerun()
 
@@ -167,7 +168,7 @@ def show_home() -> None:
             <div class="card">
                 <div class="card-icon">💰</div>
                 <div class="card-title">Osobne Financije</div>
-                <div style="font-family:'Rajdhani',sans-serif;text-align:left;margin-top:0.4rem;line-height:1.55;font-size:0.92rem;">
+                <div style="font-family:'Rajdhani',sans-serif;margin-top:0.4rem;line-height:1.55;font-size:0.92rem;">
                     <div style="color:#7a8aa8;font-size:0.7rem;letter-spacing:0.14em;text-transform:uppercase;">Trenutno stanje</div>
                     <div style="color:{tone};font-family:'Orbitron',monospace;font-weight:700;font-size:1.15rem;margin-bottom:0.5rem;">{format_eur(m["trenutno_stanje"])}</div>
                     <div style="color:#7a8aa8;font-size:0.7rem;letter-spacing:0.14em;text-transform:uppercase;">Troškovi ovaj mjesec</div>
@@ -250,7 +251,7 @@ def show_woodworking() -> None:
         border:1px solid rgba(180,130,60,0.25);box-shadow:inset 0 0 80px rgba(140,90,30,0.12);">
         <div style="font-size:3.5rem;margin-bottom:1rem;">🪵</div>
         <div class="subapp-title" style="color:#c8922a;text-shadow:0 0 20px rgba(200,146,42,0.4);">THE DWARVEN FORGE</div>
-        <div class="subapp-subtitle" style="color:#aa7830;">Woodworking Modeling &nbsp;|&nbsp; Dungeons &amp; Dragons Workshop</div>
+        <div class="subapp-subtitle" style="color:#aa7830;">Woodworking &nbsp;|&nbsp; Dungeons &amp; Dragons Workshop</div>
         <div style="color:#806030;font-family:'Rajdhani',sans-serif;font-size:0.95rem;margin-bottom:2rem;max-width:440px;line-height:1.6;">
             "Not all treasure is silver and gold, mate."<br>
             <span style="color:#c8922a;font-size:0.85rem;">— D&D Dungeon Master's Guide</span>
@@ -266,7 +267,7 @@ def show_tech() -> None:
         border:1px solid rgba(0,200,255,0.2);box-shadow:inset 0 0 80px rgba(0,150,220,0.08);">
         <div style="font-size:3.5rem;margin-bottom:1rem;">📡</div>
         <div class="subapp-title" style="color:#00c8ff;text-shadow:0 0 20px rgba(0,200,255,0.5);">TECH INTELLIGENCE HUB</div>
-        <div class="subapp-subtitle" style="color:#4090b0;">Tech Scene News &nbsp;|&nbsp; Galactic Information Network</div>
+        <div class="subapp-subtitle" style="color:#4090b0;">Tech Scene &nbsp;|&nbsp; Galactic Information Network</div>
         <div style="color:#305870;font-family:'Rajdhani',sans-serif;font-size:0.95rem;margin-bottom:2rem;max-width:440px;line-height:1.6;">
             "Help me, Obi-Wan Kenobi. You're my only hope."<br>
             <span style="color:#00c8ff;font-size:0.85rem;">— Princess Leia, Star Wars</span>
@@ -282,7 +283,7 @@ def show_grocery() -> None:
         border:1px solid rgba(160,100,220,0.22);box-shadow:inset 0 0 80px rgba(120,60,200,0.08);">
         <div style="font-size:3.5rem;margin-bottom:1rem;">🛒</div>
         <div class="subapp-title" style="color:#b06cd8;text-shadow:0 0 20px rgba(176,108,216,0.4);">CANTINA MARKET</div>
-        <div class="subapp-subtitle" style="color:#8854aa;">Grocery Shopping &amp; Prices &nbsp;|&nbsp; Mos Eisley Trading Post</div>
+        <div class="subapp-subtitle" style="color:#8854aa;">Grocery &nbsp;|&nbsp; Mos Eisley Trading Post</div>
         <div style="color:#604880;font-family:'Rajdhani',sans-serif;font-size:0.95rem;margin-bottom:2rem;max-width:440px;line-height:1.6;">
             "You will never find a more wretched hive of scum and villainy."<br>
             <span style="color:#b06cd8;font-size:0.85rem;">— Obi-Wan Kenobi, Star Wars</span>
@@ -296,7 +297,7 @@ def show_grocery() -> None:
 # Routing
 # ---------------------------------------------------------------------------
 
-_PAGE_HANDLERS: dict[str, callable] = {
+_PAGE_HANDLERS: dict = {
     "🏰 Dashboard":        show_home,
     "💰 Personal Finance": show_finance,
     "🍲 Meal Planner":     show_meals,
@@ -317,7 +318,6 @@ def show_main_dashboard() -> None:
 
 
 def run() -> None:
-    """Entry point pozvan iz main.py."""
     _init_session_state()
     if not st.session_state.logged_in:
         show_landing()
